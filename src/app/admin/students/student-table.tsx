@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -159,8 +160,12 @@ export function StudentTable({ students: initial, classes, schoolId }: {
           <tbody>
             {filtered.map(s => (
               <tr key={s.id} className="border-b hover:bg-gray-50">
-                <td className="px-4 py-2 font-mono text-xs">{s.gr_no}</td>
-                <td className="px-4 py-2">{s.full_name}</td>
+                <td className="px-4 py-2 font-mono text-xs">
+                  <Link href={`/student/${s.gr_no}`} className="text-blue-600 hover:underline">{s.gr_no}</Link>
+                </td>
+                <td className="px-4 py-2">
+                  <Link href={`/student/${s.gr_no}`} className="hover:text-blue-600 hover:underline">{s.full_name}</Link>
+                </td>
                 <td className="px-4 py-2 text-gray-600">{s.classes?.name ?? '—'}</td>
                 <td className="px-4 py-2 text-gray-600">{s.guardian_phone ?? '—'}</td>
                 <td className="px-4 py-2">
