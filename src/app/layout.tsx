@@ -13,13 +13,17 @@ export const metadata: Metadata = {
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
   let profile: { full_name: string; role: string } | null = null
-  if (user) {
-    const { data } = await supabase.from('profiles').select('full_name, role').eq('id', user.id).single()
-    profile = data as any
+
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      const { data } = await supabase.from('profiles').select('full_name, role').eq('id', user.id).single()
+      profile = data as any
+    }
+  } catch {
+    // Supabase not configured — render without nav, pages handle auth individually
   }
 
   return (

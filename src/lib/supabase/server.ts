@@ -4,10 +4,10 @@ import { cookies } from 'next/headers'
 import type { Database } from '@/lib/supabase/types'
 
 export async function createClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co'
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? 'placeholder-key'
   const cookieStore = await cookies()
-  return createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  return createServerClient<Database>(url, key,
     {
       cookies: {
         getAll() { return cookieStore.getAll() },
