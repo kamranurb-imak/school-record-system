@@ -75,71 +75,7 @@ function createLogger(logDir, imageBaseName) {
 // ─── Build prompt for Claude Code CLI ────────────────────────────────────────
 
 function buildPrompt(imagePath) {
-  return `You are running in automated batch mode as admin. Do NOT ask for confirmation at any step — proceed directly to inserting records.
-
-Process the diary image at this exact path: ${imagePath}
-
-Follow these steps completely without stopping:
-
-STEP 1 — Read the image
-Use the Read tool to view the image file at the path above.
-
-STEP 2 — Extract all records
-Extract EVERY record visible in the image:
-- Student GR numbers (rows, e.g. STD-001, STD-1, 1, 2, 3...)
-- Dates (columns — auto-detect month/year from any visible header)
-- Subject comments for each cell
-
-Map each cell to the closest comment code:
-EXCELLENT, GOOD, FINE, AVERAGE, HW_NOT_DONE, COPY_MISSING, SLEEPING, MISBEHAVIOR, ABSENT, LATE
-
-Mapping:
-- Excellent/Exc → EXCELLENT
-- Good/Gd → GOOD
-- Fine/fn → FINE
-- Average/Avg → AVERAGE
-- HW not done/Homework missing → HW_NOT_DONE
-- Copy missing/No copy → COPY_MISSING
-- Sleeping/Sleep/Slept → SLEEPING
-- Misbehavior/Misbehave/Rude → MISBEHAVIOR
-- Absent/Abs/A → ABSENT
-- Late/Came late → LATE
-- Empty cell → skip
-
-STEP 3 — Look up database IDs (Supabase project: kxfxcfbwmlnisjtycxgk)
-
-3a. For each student GR number found, look up the student ID:
-SELECT id, class_id FROM students
-WHERE school_id = '${SCHOOL_ID}'
-  AND (gr_no = '<GR_NO>' OR gr_no = '<GR_NO_PADDED>');
-
-3b. For each student, get class_subject IDs:
-SELECT cs.id as class_subject_id, s.name as subject_name
-FROM class_subjects cs
-JOIN subjects s ON cs.subject_id = s.id
-WHERE cs.class_id = '<CLASS_ID>';
-
-3c. Get all comment_code IDs:
-SELECT id, code FROM comment_codes
-WHERE school_id = '${SCHOOL_ID}';
-
-STEP 4 — Insert records (DO NOT ask for confirmation — insert immediately)
-Build a single INSERT with all rows:
-
-INSERT INTO daily_records (student_id, class_subject_id, record_date, comment_code_id, entered_by, source)
-VALUES (...)
-ON CONFLICT (student_id, class_subject_id, record_date)
-DO UPDATE SET comment_code_id = EXCLUDED.comment_code_id;
-
-Use entered_by = '00000000-0000-0000-0000-000000000100', source = 'photo_ocr'.
-
-STEP 5 — Report results
-End your response with a line in exactly this format (required for logging):
-BATCH_RESULT: <N> records inserted, <M> skipped
-
-Example: BATCH_RESULT: 27 records inserted, 3 skipped
-
-This is an automated run. Complete all steps without asking anything.`
+  return `/diary-batch ${imagePath}`
 }
 
 // ─── Invoke Claude Code CLI ───────────────────────────────────────────────────
