@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem \"c:\\\\Users\\\\Salman TRaders\\\\Desktop\\\\Claude Code\\\\claude code project\\\\school-record-system\" | Where-Object { $_.Name -ne \"node_modules\" } | Select-Object Name)",
+      "mcp__claude_ai_Supabase__list_projects",
+      "mcp__claude_ai_Supabase__list_tables",
+      "mcp__claude_ai_Supabase__apply_migration",
+      "mcp__claude_ai_Supabase__get_project_url",
+      "mcp__claude_ai_Supabase__get_publishable_keys"
+    ]
+  }
+}

@@ -1,21 +1,19 @@
 /**
  * Diary Image Batch Processor
  *
- * Scans the Pending folder (configured in Admin > Settings), calls Claude Opus 4.7
- * to extract ALL dates/students/subjects visible in each image, upserts records into
- * Supabase, moves the image to Completed, and writes a log file.
+ * Scans the Pending folder (configured in Admin > Settings), invokes the Claude Code
+ * CLI (uses your Pro subscription — no API credits needed) to extract and insert all
+ * diary records, then moves each image and writes a log file.
  *
  * Usage:
  *   node scripts/process-diary-images.mjs
  *   npm run process-diary
- *
- * Runs as admin (service role key — bypasses RLS). No user interaction required.
  */
 
 import fs from 'fs'
 import path from 'path'
+import { spawnSync } from 'child_process'
 import { createClient } from '@supabase/supabase-js'
-import Anthropic from '@anthropic-ai/sdk'
 
 // ─── Load .env.local ─────────────────────────────────────────────────────────
 
@@ -41,72 +39,23 @@ function loadEnv() {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SCHOOL_ID = '00000000-0000-0000-0000-000000000001'
-const ADMIN_USER_ID = '00000000-0000-0000-0000-000000000100'
-const SUPABASE_PROJECT_ID = 'kxfxcfbwmlnisjtycxgk'
-
 const SUPPORTED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png'])
-
-const EXTRACTION_SYSTEM = `You are a school diary record extractor. You will be given an image of a handwritten school diary page.
-
-The diary may show:
-- Multiple students (rows labeled with GR numbers like STD-001, STD-1, 1, 2, 3...)
-- Multiple dates (columns with day numbers or full dates)
-- Multiple subjects (Math, English, Science, Chemistry, Urdu, Islamic Studies, etc.)
-- Comment codes written in each cell
-
-Your task: Extract EVERY record visible in the image.
-
-Map each cell to the closest comment code:
-EXCELLENT, GOOD, FINE, AVERAGE, HW_NOT_DONE, COPY_MISSING, SLEEPING, MISBEHAVIOR, ABSENT, LATE
-
-Mapping rules:
-- Excellent/Exc → EXCELLENT
-- Good/Gd → GOOD
-- Fine/fn → FINE
-- Average/Avg → AVERAGE
-- HW not done/Homework missing/HW missing → HW_NOT_DONE
-- Copy missing/Copy not brought/No copy → COPY_MISSING
-- Sleeping/Sleep/Slept → SLEEPING
-- Misbehavior/Misbehave/Rude/Bad behavior → MISBEHAVIOR
-- Absent/Abs/A → ABSENT
-- Late/Late arrival/Came late → LATE
-- Empty/blank cell → null (do not include in entries)
-
-Auto-detect the month and year from any visible header, title, or context in the image.
-For day numbers (e.g. column header "1", "2", "3"), combine with the detected month/year to form YYYY-MM-DD.
-
-Return ONLY valid JSON in this exact format:
-{
-  "month_year": "YYYY-MM",
-  "detected_from": "brief description of where you found the month/year",
-  "subjects": ["Math", "English", ...],
-  "entries": [
-    { "gr_no": "STD-001", "date": "YYYY-MM-DD", "subject": "Math", "code": "GOOD" },
-    { "gr_no": "STD-001", "date": "YYYY-MM-DD", "subject": "English", "code": "COPY_MISSING" }
-  ]
-}
-
-Only include entries where code is non-null. If month/year cannot be detected, use "UNKNOWN" for month_year.
-Return ONLY valid JSON, no explanation text outside the JSON.`
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
 function createLogger(logDir, imageBaseName) {
   const dateStr = new Date().toISOString().slice(0, 10)
   const logFile = path.join(logDir, `${imageBaseName}_log_${dateStr}.txt`)
-
   fs.mkdirSync(logDir, { recursive: true })
 
   const lines = []
-  const started = new Date().toISOString()
   lines.push(`=== Diary Processor Log ===`)
   lines.push(`Image   : ${imageBaseName}`)
-  lines.push(`Started : ${started}`)
+  lines.push(`Started : ${new Date().toISOString()}`)
   lines.push('')
 
   function write(msg) {
-    const ts = new Date().toISOString()
-    const line = `[${ts}] ${msg}`
+    const line = `[${new Date().toISOString()}] ${msg}`
     lines.push(line)
     process.stdout.write(line + '\n')
   }
@@ -123,227 +72,159 @@ function createLogger(logDir, imageBaseName) {
   return { write, flush }
 }
 
-// ─── Claude extraction ────────────────────────────────────────────────────────
+// ─── Build prompt for Claude Code CLI ────────────────────────────────────────
 
-async function extractFromImage(anthropic, imagePath) {
-  const ext = path.extname(imagePath).toLowerCase()
-  const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg'
-  const imageBase64 = fs.readFileSync(imagePath).toString('base64')
+function buildPrompt(imagePath) {
+  return `You are running in automated batch mode as admin. Do NOT ask for confirmation at any step — proceed directly to inserting records.
 
-  const response = await anthropic.messages.create({
-    model: 'claude-opus-4-7',
-    max_tokens: 8192,
-    system: EXTRACTION_SYSTEM,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: mimeType, data: imageBase64 },
-          },
-          {
-            type: 'text',
-            text: 'Extract ALL records from this diary page. Include every student, every date, every subject visible.',
-          },
-        ],
-      },
+Process the diary image at this exact path: ${imagePath}
+
+Follow these steps completely without stopping:
+
+STEP 1 — Read the image
+Use the Read tool to view the image file at the path above.
+
+STEP 2 — Extract all records
+Extract EVERY record visible in the image:
+- Student GR numbers (rows, e.g. STD-001, STD-1, 1, 2, 3...)
+- Dates (columns — auto-detect month/year from any visible header)
+- Subject comments for each cell
+
+Map each cell to the closest comment code:
+EXCELLENT, GOOD, FINE, AVERAGE, HW_NOT_DONE, COPY_MISSING, SLEEPING, MISBEHAVIOR, ABSENT, LATE
+
+Mapping:
+- Excellent/Exc → EXCELLENT
+- Good/Gd → GOOD
+- Fine/fn → FINE
+- Average/Avg → AVERAGE
+- HW not done/Homework missing → HW_NOT_DONE
+- Copy missing/No copy → COPY_MISSING
+- Sleeping/Sleep/Slept → SLEEPING
+- Misbehavior/Misbehave/Rude → MISBEHAVIOR
+- Absent/Abs/A → ABSENT
+- Late/Came late → LATE
+- Empty cell → skip
+
+STEP 3 — Look up database IDs (Supabase project: kxfxcfbwmlnisjtycxgk)
+
+3a. For each student GR number found, look up the student ID:
+SELECT id, class_id FROM students
+WHERE school_id = '${SCHOOL_ID}'
+  AND (gr_no = '<GR_NO>' OR gr_no = '<GR_NO_PADDED>');
+
+3b. For each student, get class_subject IDs:
+SELECT cs.id as class_subject_id, s.name as subject_name
+FROM class_subjects cs
+JOIN subjects s ON cs.subject_id = s.id
+WHERE cs.class_id = '<CLASS_ID>';
+
+3c. Get all comment_code IDs:
+SELECT id, code FROM comment_codes
+WHERE school_id = '${SCHOOL_ID}';
+
+STEP 4 — Insert records (DO NOT ask for confirmation — insert immediately)
+Build a single INSERT with all rows:
+
+INSERT INTO daily_records (student_id, class_subject_id, record_date, comment_code_id, entered_by, source)
+VALUES (...)
+ON CONFLICT (student_id, class_subject_id, record_date)
+DO UPDATE SET comment_code_id = EXCLUDED.comment_code_id;
+
+Use entered_by = '00000000-0000-0000-0000-000000000100', source = 'photo_ocr'.
+
+STEP 5 — Report results
+End your response with a line in exactly this format (required for logging):
+BATCH_RESULT: <N> records inserted, <M> skipped
+
+Example: BATCH_RESULT: 27 records inserted, 3 skipped
+
+This is an automated run. Complete all steps without asking anything.`
+}
+
+// ─── Invoke Claude Code CLI ───────────────────────────────────────────────────
+
+function runClaude(imagePath, logger) {
+  const prompt = buildPrompt(imagePath)
+
+  logger.write('Invoking Claude Code CLI (Pro subscription)...')
+
+  const result = spawnSync(
+    'claude',
+    [
+      '--print',
+      '--dangerously-skip-permissions',
+      '--allowedTools',
+      'Read,mcp__claude_ai_Supabase__execute_sql',
+      '--message',
+      prompt,
     ],
-  })
+    {
+      encoding: 'utf8',
+      timeout: 300000, // 5 min per image
+      windowsHide: true,
+      cwd: path.join(import.meta.dirname, '..'),
+    }
+  )
 
-  const text = response.content[0].type === 'text' ? response.content[0].text : ''
-  const jsonMatch = text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('Claude returned no JSON')
-  return JSON.parse(jsonMatch[0])
-}
+  const output = result.stdout || ''
+  const errOutput = result.stderr || ''
 
-// ─── DB lookups ───────────────────────────────────────────────────────────────
-
-async function loadLookups(supabase) {
-  const [studentsRes, classSubjectsRes, commentCodesRes] = await Promise.all([
-    supabase
-      .from('students')
-      .select('id, gr_no, class_id')
-      .eq('school_id', SCHOOL_ID)
-      .eq('is_active', true),
-    supabase
-      .from('class_subjects')
-      .select('id, class_id, subject_id, subjects(name)')
-      .eq('school_id', SCHOOL_ID),
-    supabase
-      .from('comment_codes')
-      .select('id, code')
-      .eq('school_id', SCHOOL_ID),
-  ])
-
-  if (studentsRes.error) throw new Error(`Students lookup failed: ${studentsRes.error.message}`)
-  if (classSubjectsRes.error) throw new Error(`ClassSubjects lookup failed: ${classSubjectsRes.error.message}`)
-  if (commentCodesRes.error) throw new Error(`CommentCodes lookup failed: ${commentCodesRes.error.message}`)
-
-  // gr_no → { id, class_id }  (try both "STD-1" and "STD-001" formats)
-  const studentByGr = new Map()
-  for (const s of studentsRes.data) {
-    studentByGr.set(s.gr_no.toUpperCase(), s)
-    // also index by numeric part for partial matching
-    const num = s.gr_no.replace(/\D/g, '')
-    if (num) studentByGr.set(num, s)
+  if (result.error) {
+    throw new Error(`claude CLI failed to launch: ${result.error.message}. Make sure Claude Code is installed and 'claude' is in your PATH.`)
   }
 
-  // class_id + subject_name (lowercase) → class_subject_id
-  const classSubjectKey = (classId, subjectName) =>
-    `${classId}::${subjectName.toLowerCase()}`
-  const classSubjectMap = new Map()
-  for (const cs of classSubjectsRes.data) {
-    const name = cs.subjects?.name ?? ''
-    classSubjectMap.set(classSubjectKey(cs.class_id, name), cs.id)
-  }
-
-  // code → id
-  const commentCodeMap = new Map()
-  for (const cc of commentCodesRes.data) {
-    commentCodeMap.set(cc.code, cc.id)
-  }
-
-  return { studentByGr, classSubjectMap, commentCodeMap }
-}
-
-function resolveStudent(gr_no, studentByGr) {
-  const upper = gr_no.toUpperCase()
-  if (studentByGr.has(upper)) return studentByGr.get(upper)
-  // try zero-padded e.g. STD-1 → STD-001
-  const padded = upper.replace(/(\D+)(\d+)$/, (_, prefix, num) => prefix + num.padStart(3, '0'))
-  if (studentByGr.has(padded)) return studentByGr.get(padded)
-  // try numeric only
-  const num = gr_no.replace(/\D/g, '')
-  if (num && studentByGr.has(num)) return studentByGr.get(num)
-  return null
-}
-
-function resolveClassSubject(classId, subjectName, classSubjectMap) {
-  const name = subjectName.toLowerCase()
-  const exact = classSubjectMap.get(`${classId}::${name}`)
-  if (exact) return exact
-  // partial match
-  for (const [key, id] of classSubjectMap) {
-    if (key.startsWith(classId) && key.includes(name)) return id
-    if (key.startsWith(classId)) {
-      const storedName = key.split('::')[1]
-      if (storedName.includes(name) || name.includes(storedName)) return id
+  // Log the full Claude output
+  if (output) {
+    for (const line of output.split('\n')) {
+      if (line.trim()) logger.write(`  claude: ${line}`)
     }
   }
-  return null
+  if (errOutput) {
+    for (const line of errOutput.split('\n')) {
+      if (line.trim()) logger.write(`  claude-err: ${line}`)
+    }
+  }
+
+  // Parse BATCH_RESULT line
+  const resultMatch = output.match(/BATCH_RESULT:\s*(.+)/i)
+  const summary = resultMatch ? resultMatch[1].trim() : null
+
+  const success = result.status === 0 && !!resultMatch
+  return { success, summary, exitCode: result.status }
 }
 
 // ─── Process one image ────────────────────────────────────────────────────────
 
-async function processImage(imagePath, { anthropic, supabase, pendingDir, completedDir, logDir }) {
+async function processImage(imagePath, { completedDir, logDir }) {
   const imageBaseName = path.basename(imagePath, path.extname(imagePath))
   const logger = createLogger(logDir, imageBaseName)
 
-  logger.write(`Processing image: ${imagePath}`)
+  logger.write(`Processing: ${imagePath}`)
 
   try {
-    // 1. Extract via Claude
-    logger.write('Calling Claude Opus 4.7 for OCR extraction...')
-    const extracted = await extractFromImage(anthropic, imagePath)
-    logger.write(`Detected month/year: ${extracted.month_year} (${extracted.detected_from ?? 'auto'})`)
-    logger.write(`Subjects found: ${(extracted.subjects ?? []).join(', ')}`)
-    logger.write(`Raw entries from Claude: ${(extracted.entries ?? []).length}`)
+    const { success, summary, exitCode } = runClaude(imagePath, logger)
 
-    if (!extracted.entries || extracted.entries.length === 0) {
-      logger.write('WARNING: No entries extracted from image. Possible blank page or unreadable image.')
-      const logFile = logger.flush(false, 'No entries extracted')
-      logger.write(`Log written to: ${logFile}`)
-      return { success: false, reason: 'No entries extracted' }
+    if (!success) {
+      const reason = summary ?? `Claude exited with code ${exitCode}`
+      const logFile = logger.flush(false, reason)
+      logger.write(`Log: ${logFile}`)
+      return { success: false, reason }
     }
 
-    if (extracted.month_year === 'UNKNOWN') {
-      logger.write('WARNING: Could not detect month/year from image. Proceeding with extracted dates as-is.')
-    }
-
-    // 2. Load DB lookups
-    logger.write('Loading database lookup tables...')
-    const { studentByGr, classSubjectMap, commentCodeMap } = await loadLookups(supabase)
-
-    // 3. Build insert rows
-    const insertRows = []
-    const skipped = []
-
-    for (const entry of extracted.entries) {
-      if (!entry.code || !entry.gr_no || !entry.date || !entry.subject) {
-        skipped.push(`Incomplete entry: ${JSON.stringify(entry)}`)
-        continue
-      }
-
-      const student = resolveStudent(entry.gr_no, studentByGr)
-      if (!student) {
-        skipped.push(`Student not found: ${entry.gr_no}`)
-        continue
-      }
-
-      const classSubjectId = resolveClassSubject(student.class_id, entry.subject, classSubjectMap)
-      if (!classSubjectId) {
-        skipped.push(`Subject not found: "${entry.subject}" for student ${entry.gr_no}`)
-        continue
-      }
-
-      const commentCodeId = commentCodeMap.get(entry.code)
-      if (!commentCodeId) {
-        skipped.push(`Comment code not found: ${entry.code}`)
-        continue
-      }
-
-      insertRows.push({
-        student_id: student.id,
-        class_subject_id: classSubjectId,
-        record_date: entry.date,
-        comment_code_id: commentCodeId,
-        entered_by: ADMIN_USER_ID,
-        source: 'photo_ocr',
-      })
-    }
-
-    logger.write(`Records to insert: ${insertRows.length} (skipped: ${skipped.length})`)
-    if (skipped.length > 0) {
-      for (const s of skipped) logger.write(`  SKIP: ${s}`)
-    }
-
-    if (insertRows.length === 0) {
-      logger.write('WARNING: No valid records to insert after lookup resolution.')
-      const logFile = logger.flush(false, 'No valid records after lookup')
-      logger.write(`Log written to: ${logFile}`)
-      return { success: false, reason: 'No valid records to insert' }
-    }
-
-    // 4. Upsert into daily_records
-    logger.write('Upserting records into daily_records...')
-    const { error: upsertError } = await supabase
-      .from('daily_records')
-      .upsert(insertRows, {
-        onConflict: 'student_id,class_subject_id,record_date',
-        ignoreDuplicates: false,
-      })
-
-    if (upsertError) throw new Error(`Upsert failed: ${upsertError.message}`)
-
-    logger.write(`Successfully upserted ${insertRows.length} records.`)
-
-    // 5. Move image to Completed
+    // Move image to Completed
     fs.mkdirSync(completedDir, { recursive: true })
-    const destPath = path.join(completedDir, path.basename(imagePath))
-    fs.renameSync(imagePath, destPath)
-    logger.write(`Image moved to: ${destPath}`)
+    const dest = path.join(completedDir, path.basename(imagePath))
+    fs.renameSync(imagePath, dest)
+    logger.write(`Moved to: ${dest}`)
 
-    const summary = `${insertRows.length} records inserted, ${skipped.length} skipped`
     const logFile = logger.flush(true, summary)
-    logger.write(`Log written to: ${logFile}`)
-
-    return { success: true, inserted: insertRows.length, skipped: skipped.length }
+    logger.write(`Log: ${logFile}`)
+    return { success: true, summary }
   } catch (err) {
     logger.write(`ERROR: ${err.message}`)
-    if (err.stack) logger.write(err.stack)
     const logFile = logger.flush(false, err.message)
-    logger.write(`Log written to: ${logFile}`)
+    logger.write(`Log: ${logFile}`)
     return { success: false, reason: err.message }
   }
 }
@@ -354,7 +235,7 @@ async function main() {
   console.log('=== Diary Image Batch Processor ===')
   console.log(`Started: ${new Date().toISOString()}`)
 
-  // Load env
+  // Load env and Supabase client (only used to read folder path settings)
   let env
   try {
     env = loadEnv()
@@ -365,18 +246,14 @@ async function main() {
 
   const supabaseUrl = env['NEXT_PUBLIC_SUPABASE_URL']
   const serviceRoleKey = env['SUPABASE_SERVICE_ROLE_KEY']
-  const anthropicApiKey = env['ANTHROPIC_API_KEY']
 
-  if (!supabaseUrl || !serviceRoleKey || !anthropicApiKey) {
-    console.error('FATAL: Missing required env vars (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY)')
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error('FATAL: Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env.local')
     process.exit(1)
   }
 
-  // Init clients
   const supabase = createClient(supabaseUrl, serviceRoleKey)
-  const anthropic = new Anthropic({ apiKey: anthropicApiKey })
 
-  // Load folder paths from school settings
   const { data: school, error: schoolErr } = await supabase
     .from('schools')
     .select('settings')
@@ -394,7 +271,7 @@ async function main() {
   const logDir = settings.diary_log_dir
 
   if (!pendingDir || !completedDir || !logDir) {
-    console.error('FATAL: Diary folder paths not configured. Please set them at Admin > Settings in the web app.')
+    console.error('FATAL: Diary folder paths not configured. Go to Admin > Settings in the web app.')
     process.exit(1)
   }
 
@@ -404,25 +281,25 @@ async function main() {
   }
 
   // Find images
-  const files = fs.readdirSync(pendingDir).filter(f => SUPPORTED_EXTENSIONS.has(path.extname(f).toLowerCase()))
-  console.log(`Found ${files.length} image(s) in: ${pendingDir}`)
+  const files = fs.readdirSync(pendingDir)
+    .filter(f => SUPPORTED_EXTENSIONS.has(path.extname(f).toLowerCase()))
 
+  console.log(`Found ${files.length} image(s) in: ${pendingDir}`)
   if (files.length === 0) {
-    console.log('Nothing to process. Exiting.')
+    console.log('Nothing to process.')
     process.exit(0)
   }
 
-  // Process each image
   let succeeded = 0
   let failed = 0
 
   for (const file of files) {
     const imagePath = path.join(pendingDir, file)
     console.log(`\n--- Processing: ${file} ---`)
-    const result = await processImage(imagePath, { anthropic, supabase, pendingDir, completedDir, logDir })
+    const result = await processImage(imagePath, { completedDir, logDir })
     if (result.success) {
       succeeded++
-      console.log(`  OK: ${result.inserted} records inserted, ${result.skipped} skipped`)
+      console.log(`  OK: ${result.summary}`)
     } else {
       failed++
       console.log(`  FAILED: ${result.reason}`)
@@ -435,6 +312,6 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error('FATAL unhandled error:', err)
+  console.error('FATAL:', err)
   process.exit(1)
 })
