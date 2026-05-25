@@ -152,12 +152,11 @@ function runClaude(imagePath, logger) {
   const result = spawnSync(
     'claude',
     [
-      '--print',
+      '-p',
+      prompt,
       '--dangerously-skip-permissions',
       '--allowedTools',
       'Read,mcp__claude_ai_Supabase__execute_sql',
-      '--message',
-      prompt,
     ],
     {
       encoding: 'utf8',
