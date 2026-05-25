@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "process-diary": "node scripts/process-diary-images.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

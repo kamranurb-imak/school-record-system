@@ -1,125 +1,101 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 @AGENTS.md
 
-# School Daily Record System
-
-A multi-tenant Next.js 16 + Supabase app for school teachers to log daily student observations and generate AI-powered reports.
-
-## Stack
-
-- **Framework**: Next.js 16.2.6 (App Router, React 19)
-- **Database / Auth**: Supabase (`@supabase/ssr` + `@supabase/supabase-js`)
-- **AI**: Anthropic SDK (`@anthropic-ai/sdk`) — Claude Opus 4.7 for diary OCR + AI summaries
-- **UI**: Tailwind CSS v4, shadcn/ui (base-ui), lucide-react, sonner (toasts)
-- **Deploy**: Vercel (`vercel.json` present)
-
-## Project Structure
-
-```
-src/
-  app/
-    page.tsx              — root redirect based on role
-    layout.tsx            — root layout
-    login/                — Supabase email/password login
-    admin/                — Admin dashboard + sub-pages
-      page.tsx            — overview / stats
-      classes/            — manage classes
-      students/           — manage students
-      teachers/           — manage teacher accounts
-      subjects/           — manage subjects
-      comment-codes/      — manage comment codes
-      diary-uploads/      — review OCR uploads
-    class/                — Class teacher view (matrix of students × subjects)
-    teacher/              — Subject teacher daily entry form
-    reports/              — Student report viewer
-    student/[grNo]/       — Individual student detail page
-    api/
-      admin/              — Admin CRUD API routes
-      diary/              — Photo upload + OCR trigger
-      alerts/             — Alert management
-      cron/               — Scheduled jobs (AI summaries, alert generation)
-      reports/            — Report data API
-  components/
-    nav.tsx               — Shared navigation bar
-    ui/                   — shadcn component files
-  lib/
-    supabase/             — Supabase client helpers (server + client)
-    auth.ts               — Auth helpers
-    claude.ts             — Anthropic client + diary extraction logic
-    utils.ts              — clsx/tw utility
-  middleware.ts           — Route protection + Supabase session refresh
-supabase/
-  migrations/0001_init.sql — Full schema (see below)
-  seed.sql                — Dev seed data
-```
-
-## Database Schema (key tables)
-
-| Table | Purpose |
-|---|---|
-| `schools` | Multi-tenant root |
-| `profiles` | Users with roles: `admin`, `class_teacher`, `subject_teacher` |
-| `academic_years` | School years per school |
-| `classes` | Classes linked to academic year + class teacher |
-| `subjects` | Subjects per school |
-| `class_subjects` | Links class + subject + assigned subject teacher |
-| `students` | Students with GR number per school |
-| `comment_codes` | Short codes (e.g. HW_NOT_DONE) with color + severity |
-| `daily_records` | Core table: one row per student × subject × date |
-| `diary_uploads` | Photo uploads pending OCR extraction |
-| `ai_summaries` | Weekly/monthly AI-generated summaries per student |
-| `alerts` | Auto-generated alerts (e.g. repeated bad codes) |
-
-All tables have RLS enabled. Helper functions: `auth_school_id()`, `auth_role()`.
-
-## Auth & Roles
-
-- Auth via Supabase email/password
-- Role is stored in `profiles.role` — `admin`, `class_teacher`, `subject_teacher`
-- Root `page.tsx` redirects to `/admin`, `/class`, or `/teacher` based on role
-- Middleware protects all routes except `/login` and `/api/cron`
-
-## Environment Variables
-
-```
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-ANTHROPIC_API_KEY=
-```
-
-## Key Conventions
-
-- Server Components fetch data directly via `createClient()` from `@/lib/supabase/server`
-- Client components use `createClient()` from `@/lib/supabase/client`
-- API routes that need elevated access use `SUPABASE_SERVICE_ROLE_KEY`
-- Cron routes (`/api/cron/*`) are public but called only by Vercel Cron
-- AI diary extraction: image → base64 → Claude Opus 4.7 vision → JSON → `daily_records`
+---
 
 ## Dev Commands
 
 ```bash
-npm run dev     # start local dev server
-npm run build   # production build
+npm run dev     # start local dev server (Turbopack)
+npm run build   # production build — run before pushing
 npm run lint    # eslint
 ```
 
-## What's Done
+No test suite exists. Verify changes with `npm run build` (0 errors required).
 
-- [x] Supabase schema + RLS policies (`supabase/migrations/0001_init.sql`)
-- [x] Next.js app scaffolded with all route folders and placeholder pages
-- [x] Supabase SSR client helpers + middleware
-- [x] Anthropic client + diary OCR extraction function
-- [x] Seed data (`supabase/seed.sql`)
-- [x] shadcn/ui components installed
+---
 
-## What's NOT Done Yet (Build Order)
+## Stack
 
-1. **Apply migration to Supabase** — run `0001_init.sql` against your Supabase project
-2. **Login page** — `src/app/login/page.tsx` (email/password form using Supabase Auth)
-3. **Admin pages** — CRUD UIs for classes, students, teachers, subjects, comment codes
-4. **Subject teacher entry** — `src/app/teacher/` daily record entry form (already has `daily-entry-form.tsx`, wire it up)
-5. **Class teacher view** — `src/app/class/` matrix view (already has `class-matrix-view.tsx`, wire it up)
-6. **Diary upload + OCR** — `src/app/admin/diary-uploads/` + `src/api/diary/` routes
-7. **Reports page** — `src/app/reports/` + student detail `src/app/student/[grNo]/`
-8. **Cron jobs** — `/api/cron/` routes for AI summaries + alert generation
-9. **Vercel deployment** — set env vars, deploy
+- **Next.js 16.2.6** — App Router, React 19, Turbopack
+- **Supabase** — Postgres + Auth + Storage (`@supabase/ssr` v0.10.3)
+- **Anthropic SDK** — Claude Opus 4.7 for diary OCR, Claude Sonnet 4.6 for AI summaries
+- **UI** — Tailwind CSS v4, shadcn/ui, sonner (toasts)
+- **Deploy** — Vercel; live at `school-record-system-three.vercel.app`
+
+---
+
+## Architecture
+
+### Next.js 16 breaking changes
+- Middleware is **`src/proxy.ts`** (not `middleware.ts`) — exports `proxy()` not `middleware()`
+- `NEXT_PUBLIC_` env vars are baked at **build time** — changing them on Vercel requires a redeploy
+
+### Auth pattern
+Every server page/route that needs auth calls `requireProfile()` from `src/lib/auth.ts`:
+```ts
+const { supabase, user, profile } = await requireProfile(['admin'])
+```
+This redirects to `/login` if unauthenticated or to `/` if the role isn't allowed. The root `page.tsx` redirects to `/admin`, `/class`, or `/teacher` based on `profile.role`.
+
+### Supabase clients
+- **`createClient()`** from `src/lib/supabase/server.ts` — cookie-based SSR client, used in Server Components and API routes
+- **`createClient()`** from `src/lib/supabase/client.ts` — browser client, used in `'use client'` components
+- **`createServiceClient()`** from `src/lib/supabase/server.ts` — service-role client, bypasses RLS; used only in API routes that need elevated access (diary upload, cron jobs)
+
+### Database key relationships
+```
+schools → profiles (users) → [admin | class_teacher | subject_teacher]
+schools → academic_years → classes → students
+classes → class_subjects (class + subject + optional teacher)
+class_subjects ← daily_records → students + comment_codes
+diary_uploads → daily_records (via source_upload_id)
+students → alerts, ai_summaries
+```
+
+`daily_records` unique constraint: `(student_id, class_subject_id, record_date)` — always upsert on conflict.
+
+### RLS
+All tables have RLS enabled. Helper DB functions `auth_school_id()` and `auth_role()` are used in policies. API routes that need to write across tenant boundaries use `createServiceClient()`.
+
+### AI / diary flow
+1. Upload: `POST /api/diary/extract` — stores image in Storage bucket `diary-images`, creates `diary_uploads` row, calls `extractDiaryFromImage()` in `src/lib/claude.ts`
+2. Claude Opus 4.7 vision returns structured JSON (`extracted_json` column)
+3. Admin reviews at `/admin/diary-uploads/[id]/review`
+4. Confirm: `POST /api/diary/[id]/confirm` — writes `daily_records` rows
+
+### Cron jobs (`vercel.json`)
+- `/api/cron/alerts` — daily 22:00 UTC: checks 4 behavioral patterns (COPY_MISSING ×3, ABSENT ×3, MISBEHAVIOR ×1, SLEEPING ×2 within 7 days), inserts `alerts` rows
+- `/api/cron/weekly-summaries` — Sunday 23:00 UTC: generates AI text summaries per student via Claude Sonnet 4.6
+- Both are authenticated via `Authorization: Bearer <CRON_SECRET>` header
+
+---
+
+## Environment Variables
+
+```
+NEXT_PUBLIC_SUPABASE_URL=        # baked into client bundle at build time
+NEXT_PUBLIC_SUPABASE_ANON_KEY=   # baked into client bundle at build time
+SUPABASE_SERVICE_ROLE_KEY=       # server-only, bypasses RLS
+ANTHROPIC_API_KEY=               # requires API credits (separate from claude.ai subscription)
+CRON_SECRET=                     # arbitrary string; Vercel sends it as Bearer token to cron routes
+```
+
+---
+
+## Seed / Test Data
+
+- School ID: `00000000-0000-0000-0000-000000000001` (Al-Barr Public School)
+- Admin user: `admin@school.com` / `Admin1234!` (UUID `00000000-0000-0000-0000-000000000100`)
+- Academic year: `00000000-0000-0000-0000-000000000010` (2025-2026, active)
+- Class: `00000000-0000-0000-0000-000000000030` (Grade 8-A, 30 students STD-001–STD-030)
+- Subjects: Math `…0020`, English `…0021`, Science `…0022`, Chemistry `…0023`, Urdu `…0024`, Islamic Studies `…0025`
+
+---
+
+## Skills
+
+`.claude/skills/diary-parser/` — invoke with `/diary-parser`. Parses a diary image and inserts `daily_records` rows via Supabase MCP. Requires image + month/year + day numbers.

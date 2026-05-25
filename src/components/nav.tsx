@@ -21,6 +21,7 @@ const navLinks: Record<string, { href: string; label: string }[]> = {
     { href: '/admin/diary-uploads', label: 'Diary Uploads' },
     { href: '/admin/alerts', label: 'Alerts' },
     { href: '/reports', label: 'Reports' },
+    { href: '/admin/settings', label: 'Settings' },
   ],
   class_teacher: [
     { href: '/class', label: 'My Class' },
