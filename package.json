@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "process-diary": "node scripts/process-diary-images.mjs"
+    "process-diary": "node scripts/process-diary-images.mjs",
+    "local-agent": "node scripts/local-agent.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
