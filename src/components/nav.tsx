@@ -39,8 +39,6 @@ const navLinks: Record<string, NavItem[]> = {
       group: 'Settings',
       children: [
         { href: '/admin/settings/folders', label: 'Folder Paths' },
-        { href: '/admin/settings/upload-diary', label: 'Upload Diary' },
-        { href: '/admin/settings/schedule', label: 'Schedule' },
       ],
     },
   ],
