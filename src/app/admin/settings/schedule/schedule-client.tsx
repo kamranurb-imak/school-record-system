@@ -30,7 +30,14 @@ function fmt24to12(time: string) {
   return `${h12}:${String(m).padStart(2, '0')} ${ampm}`
 }
 
+function useIsLocalhost() {
+  const [isLocal, setIsLocal] = useState<boolean | null>(null)
+  useEffect(() => { setIsLocal(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') }, [])
+  return isLocal
+}
+
 export function ScheduleClient() {
+  const isLocal = useIsLocalhost()
   const [agentOnline, setAgentOnline] = useState(false)
   const [schedule, setSchedule] = useState<ScheduleData | null>(null)
   const [view, setView] = useState<View>('status')
@@ -40,7 +47,18 @@ export function ScheduleClient() {
   const [removing, setRemoving] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
 
-  useEffect(() => { loadSchedule() }, [])
+  useEffect(() => { if (isLocal) loadSchedule() }, [isLocal])
+
+  if (isLocal === null) return null // hydration guard
+
+  if (!isLocal) return (
+    <div className="bg-amber-50 border border-amber-200 rounded p-5 text-sm text-amber-900 space-y-2">
+      <p className="font-semibold">Local features require the local dev server</p>
+      <p>Schedule management communicates with your PC&apos;s Windows Task Scheduler via the local agent. It only works when accessed via <strong>localhost</strong>.</p>
+      <p>Open this page at: <a href="http://localhost:3000/admin/settings/schedule" className="underline font-medium text-blue-700">http://localhost:3000/admin/settings/schedule</a></p>
+      <p className="text-xs text-amber-700">Make sure <code className="bg-amber-100 px-1 rounded">npm run dev</code> and <code className="bg-amber-100 px-1 rounded">npm run local-agent</code> are both running on your PC.</p>
+    </div>
+  )
 
   async function loadSchedule() {
     try {

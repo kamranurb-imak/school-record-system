@@ -24,17 +24,36 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
+function useIsLocalhost() {
+  const [isLocal, setIsLocal] = useState<boolean | null>(null)
+  useEffect(() => { setIsLocal(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') }, [])
+  return isLocal
+}
+
 export function UploadDiaryClient() {
+  const isLocal = useIsLocalhost()
   const [health, setHealth] = useState<HealthData | null>(null)
   const [agentOnline, setAgentOnline] = useState(false)
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    if (!isLocal) return
     checkHealth()
     const interval = setInterval(checkHealth, 10000)
     return () => clearInterval(interval)
-  }, [])
+  }, [isLocal])
+
+  if (isLocal === null) return null // hydration guard
+
+  if (!isLocal) return (
+    <div className="bg-amber-50 border border-amber-200 rounded p-5 text-sm text-amber-900 space-y-2">
+      <p className="font-semibold">Local features require the local dev server</p>
+      <p>This page can only upload files and communicate with the local agent when accessed via <strong>localhost</strong>. The Vercel-hosted site cannot reach your PC.</p>
+      <p>Open this page at: <a href="http://localhost:3000/admin/settings/upload-diary" className="underline font-medium text-blue-700">http://localhost:3000/admin/settings/upload-diary</a></p>
+      <p className="text-xs text-amber-700">Make sure <code className="bg-amber-100 px-1 rounded">npm run dev</code> and <code className="bg-amber-100 px-1 rounded">npm run local-agent</code> are both running on your PC.</p>
+    </div>
+  )
 
   async function checkHealth() {
     try {
